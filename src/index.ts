@@ -94,6 +94,13 @@ try {
       },
     );
 
+    socket.on("close-room", (roomID: string) => {
+      socketDebug(`${socket.id} closed room ${roomID}`);
+      // notify everyone currently in the room, including the sender —
+      // each client reacts the same way (detach locally) on receipt
+      io.in(roomID).emit("room-closed");
+    });
+
     socket.on(
       "server-volatile-broadcast",
       (roomID: string, encryptedData: ArrayBuffer, iv: Uint8Array) => {
