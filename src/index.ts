@@ -49,6 +49,23 @@ try {
     allowEIO3: true,
   });
 
+  // Lists currently active collaboration rooms (room ID + participant
+  // count). Never exposes the E2E encryption key, which lives only in the
+  // URL fragment on clients and is never sent to this server.
+  app.get("/rooms", (req, res) => {
+    res.header("Access-Control-Allow-Origin", process.env.CORS_ORIGIN || "*");
+    const rooms: { roomId: string; count: number }[] = [];
+    io.sockets.adapter.rooms.forEach((sockets, roomId) => {
+      // skip each socket's own default room (auto-created by socket.io,
+      // named after the socket's own id) and internal "follow user" rooms
+      if (io.sockets.sockets.has(roomId) || roomId.startsWith("follow@")) {
+        return;
+      }
+      rooms.push({ roomId, count: sockets.size });
+    });
+    res.json({ rooms });
+  });
+
   io.on("connection", (socket) => {
     ioDebug("connection established!");
     io.to(`${socket.id}`).emit("init-room");
