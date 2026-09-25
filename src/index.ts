@@ -66,28 +66,27 @@ try {
     allowEIO3: true,
   });
 
-  // Lists currently active collaboration rooms (room ID + name + creator +
-  // participant count). Never exposes the E2E encryption key.
+  // Lists active collaboration rooms (room ID + name + creator + live
+  // participant count). "Active" means registered via create-room and not
+  // yet closed — NOT merely "someone is connected right now": a room the
+  // creator left (but didn't close) is still active/joinable with 0
+  // participants, so it must still be listed here. Never exposes the E2E
+  // encryption key.
   app.get("/rooms", (req, res) => {
     res.header("Access-Control-Allow-Origin", process.env.CORS_ORIGIN || "*");
     const rooms: {
       roomId: string;
       count: number;
-      name: string | null;
-      creatorName: string | null;
+      name: string;
+      creatorName: string;
     }[] = [];
-    io.sockets.adapter.rooms.forEach((sockets, roomId) => {
-      // skip each socket's own default room (auto-created by socket.io,
-      // named after the socket's own id) and internal "follow user" rooms
-      if (io.sockets.sockets.has(roomId) || roomId.startsWith("follow@")) {
-        return;
-      }
-      const info = activeRooms.get(roomId);
+    activeRooms.forEach((info, roomId) => {
+      const sockets = io.sockets.adapter.rooms.get(roomId);
       rooms.push({
         roomId,
-        count: sockets.size,
-        name: info?.name ?? null,
-        creatorName: info?.creatorName ?? null,
+        count: sockets ? sockets.size : 0,
+        name: info.name,
+        creatorName: info.creatorName,
       });
     });
     res.json({ rooms });
