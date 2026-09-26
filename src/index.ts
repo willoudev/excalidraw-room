@@ -44,12 +44,17 @@ type RoomInfo = {
   name: string;
   creatorName: string;
   createdAt: number;
-  // Deliberately stored (and returned by GET /rooms) so any client that
-  // can see the room list can also join with one click, instead of
-  // needing the original invite link. This is an explicit trade-off for
-  // single-user/trusted deployments: it means this server DOES now hold
-  // the E2E encryption key for rooms created this way, unlike before.
+  // Stored so a "join-with-code" request can hand it back once the
+  // access code checks out — never returned by GET /rooms itself, which
+  // only exposes name/creator/count. This still means the server holds
+  // the E2E encryption key (a trade-off accepted for single-user/trusted
+  // deployments), but only releases it after the access code matches,
+  // rather than to anyone who can merely see the room list.
   roomKey: string;
+  // Short, human-shareable code (distinct from roomKey) gating joins
+  // that come from picking a room out of the active-sessions list
+  // instead of using the invite link.
+  accessCode: string;
 };
 
 // Explicit registry of rooms that were actually started through
@@ -72,13 +77,14 @@ try {
   });
 
   // Lists active collaboration rooms (room ID + name + creator + live
-  // participant count + the room's E2E key). "Active" means registered
-  // via create-room and not yet closed — NOT merely "someone is
-  // connected right now": a room the creator left (but didn't close) is
-  // still active/joinable with 0 participants, so it must still be
-  // listed here. Includes the encryption key on purpose (see RoomInfo)
-  // so any client that can reach this endpoint can join with one click;
-  // this endpoint has no auth of its own beyond CORS_ORIGIN.
+  // participant count). "Active" means registered via create-room and
+  // not yet closed — NOT merely "someone is connected right now": a
+  // room the creator left (but didn't close) is still active/joinable
+  // with 0 participants, so it must still be listed here. Deliberately
+  // never includes roomKey or accessCode: this endpoint has no auth of
+  // its own beyond CORS_ORIGIN, so browsing it only tells you a room
+  // exists — actually joining still needs either the invite link or a
+  // verified access code (see "join-with-code" below).
   app.get("/rooms", (req, res) => {
     res.header("Access-Control-Allow-Origin", process.env.CORS_ORIGIN || "*");
     const rooms: {
@@ -86,7 +92,6 @@ try {
       count: number;
       name: string;
       creatorName: string;
-      roomKey: string;
     }[] = [];
     activeRooms.forEach((info, roomId) => {
       const sockets = io.sockets.adapter.rooms.get(roomId);
@@ -95,7 +100,6 @@ try {
         count: sockets ? sockets.size : 0,
         name: info.name,
         creatorName: info.creatorName,
-        roomKey: info.roomKey,
       });
     });
     res.json({ rooms });
@@ -111,6 +115,7 @@ try {
       io.to(socket.id).emit("room-info", {
         name: info.name,
         creatorName: info.creatorName,
+        accessCode: info.accessCode,
       });
     }
 
@@ -138,6 +143,7 @@ try {
         roomName?: string;
         creatorName?: string;
         roomKey?: string;
+        accessCode?: string;
       }) => {
         const { roomID } = payload;
         activeRooms.set(roomID, {
@@ -145,8 +151,32 @@ try {
           creatorName: payload.creatorName?.trim() || "Anonyme",
           createdAt: Date.now(),
           roomKey: payload.roomKey ?? "",
+          accessCode: payload.accessCode ?? "",
         });
         await joinRoomSocket(socket, roomID);
+      },
+    );
+
+    // Lets a client that only has an access code (not the invite link,
+    // so no roomKey) join a room picked from the active-sessions list.
+    // On a match, hands back the roomKey so the client can build the
+    // full link and proceed through the normal join flow; this socket
+    // itself is NOT joined to the room — the client reconnects fresh via
+    // that link, same as anyone else opening it.
+    socket.on(
+      "join-with-code",
+      (payload: { roomID: string; code: string }) => {
+        const info = activeRooms.get(payload.roomID);
+        if (!info || !payload.code || info.accessCode !== payload.code) {
+          socketDebug(
+            `${socket.id} failed access code check for ${payload.roomID}`,
+          );
+          io.to(socket.id).emit("access-code-invalid");
+          return;
+        }
+        io.to(socket.id).emit("access-code-verified", {
+          roomKey: info.roomKey,
+        });
       },
     );
 
